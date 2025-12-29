@@ -242,14 +242,14 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             key = PREF_REG_NO
             title = "Registration Number"
             summary = "Your Udvash Registration Number"
-            setDefaultValue("4019749")
+            setDefaultValue("")
         }.also(screen::addPreference)
 
         EditTextPreference(screen.context).apply {
             key = PREF_PASSWORD
             title = "Password"
             summary = "Your Udvash Password"
-            setDefaultValue("zxcvbnmmnbvcxzZ,21")
+            setDefaultValue("")
         }.also(screen::addPreference)
     }
 
