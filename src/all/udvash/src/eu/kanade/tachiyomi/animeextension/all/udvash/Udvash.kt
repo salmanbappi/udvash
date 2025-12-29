@@ -217,7 +217,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         try {
             val response = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
-            doc.select("a[href*=masterCourseId=]").forEach { 
+            doc.select("a[href*=masterCourseId=]").forEach {
                 list.add(Course(it.text().trim(), it.attr("href")))
             }
         } catch (e: Exception) {

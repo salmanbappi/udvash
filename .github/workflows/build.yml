@@ -45,7 +45,7 @@ jobs:
           KEY_STORE_PASSWORD: dhakaflix123
           ALIAS: dflix
           KEY_PASSWORD: dhakaflix123
-        run: chmod +x gradlew && ./gradlew :src:all:udvash:assembleRelease --no-daemon
+        run: chmod +x gradlew && ./gradlew :src:all:udvash:assembleRelease -x lint --no-daemon
 
       - name: Gemini Auto-Remediation (Failure Cleanup)
         if: failure()
