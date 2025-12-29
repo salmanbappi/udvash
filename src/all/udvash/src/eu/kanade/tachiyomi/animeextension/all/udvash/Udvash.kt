@@ -102,8 +102,8 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         val courseUrl = preferences.getString(PREF_LAST_COURSE_URL, "")
         val url = if (courseUrl.isNullOrEmpty()) {
             val courses = getMyCourses()
-            if (courses.size > 1) {
-                val firstCourse = courses[1]
+            if (courses.isNotEmpty()) {
+                val firstCourse = courses[0]
                 preferences.edit().putString(PREF_LAST_COURSE_URL, firstCourse.url).apply()
                 firstCourse.url
             } else {
@@ -142,7 +142,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
         val courseFilter = filters.filterIsInstance<CourseFilter>().firstOrNull()
-        if (courseFilter != null && courseFilter.state > 0) {
+        if (courseFilter != null) {
             runCatching {
                 val selectedCourse = courseFilter.courses[courseFilter.state]
                 if (selectedCourse.url.isNotEmpty()) {
@@ -236,7 +236,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     }
 
     private fun getMyCourses(): List<Course> {
-        val list = mutableListOf(Course("Select a Course", ""))
+        val list = mutableListOf<Course>()
         runCatching {
             val dashboardUrl = baseUrl.toHttpUrl().newBuilder().addPathSegment("Dashboard").build()
             val doc = client.newCall(GET(dashboardUrl.toString(), headers)).execute().asJsoup()
