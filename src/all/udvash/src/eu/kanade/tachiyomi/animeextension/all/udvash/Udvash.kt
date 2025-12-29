@@ -2,6 +2,10 @@ package eu.kanade.tachiyomi.animeextension.all.udvash
 
 import android.app.Application
 import android.content.SharedPreferences
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
+import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
@@ -10,6 +14,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
+import eu.kanade.tachiyomi.network.awaitSuccess
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,7 +23,7 @@ import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
-class Udvash : AnimeHttpSource() {
+class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     override val name = "Udvash"
 
@@ -48,8 +53,12 @@ class Udvash : AnimeHttpSource() {
         .build()
 
     private fun login() {
-        val regNo = "4019749"
-        val password = "zxcvbnmmnbvcxzZ,21"
+        val regNo = preferences.getString(PREF_REG_NO, "") ?: ""
+        val password = preferences.getString(PREF_PASSWORD, "") ?: ""
+
+        if (regNo.isEmpty() || password.isEmpty()) {
+            throw Exception("Please set Registration Number and Password in extension settings.")
+        }
 
         // Step 1: Get Token from Login Page
         val loginPageRequest = GET("$baseUrl/Account/Login")
@@ -85,7 +94,8 @@ class Udvash : AnimeHttpSource() {
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
-        return GET("$baseUrl/Content/ContentSubject?CourseTypeId=2&masterCourseId=82", headers)
+        val courseUrl = preferences.getString(PREF_LAST_COURSE_URL, "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82")
+        return GET("$baseUrl$courseUrl", headers)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -107,6 +117,19 @@ class Udvash : AnimeHttpSource() {
     override fun latestUpdatesParse(response: Response): AnimesPage = throw UnsupportedOperationException()
 
     // =============================== Search ===============================
+
+    override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
+        val courseFilter = filters.filterIsInstance<CourseFilter>().firstOrNull()
+        if (courseFilter != null && courseFilter.state > 0) {
+            val selectedCourse = courseFilter.courses[courseFilter.state]
+            if (selectedCourse.url.isNotEmpty()) {
+                preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
+                val request = GET("$baseUrl${selectedCourse.url}", headers)
+                return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
+            }
+        }
+        return super.getSearchAnime(page, query, filters)
+    }
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         return popularAnimeRequest(page)
@@ -179,5 +202,60 @@ class Udvash : AnimeHttpSource() {
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
 
-    override fun getFilterList(): AnimeFilterList = AnimeFilterList()
+    // ============================== Filters ===============================
+
+    override fun getFilterList(): AnimeFilterList {
+        val courses = getMyCourses()
+        return AnimeFilterList(
+            AnimeFilter.Header("Course Selection"),
+            CourseFilter(courses),
+        )
+    }
+
+    private fun getMyCourses(): List<Course> {
+        val list = mutableListOf(Course("Default", ""))
+        try {
+            val response = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
+            val doc = Jsoup.parse(response.body?.string().orEmpty())
+            doc.select("a[href*=masterCourseId=]").forEach { 
+                list.add(Course(it.text().trim(), it.attr("href")))
+            }
+        } catch (e: Exception) {
+            // Logged out or network error
+        }
+        return list
+    }
+
+    private data class Course(val name: String, val url: String) {
+        override fun toString(): String = name
+    }
+
+    private class CourseFilter(val courses: List<Course>) : AnimeFilter.Select<Course>(
+        "Select Course",
+        courses.toTypedArray(),
+    )
+
+    // ============================== Settings ==============================
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = PREF_REG_NO
+            title = "Registration Number"
+            summary = "Your Udvash Registration Number"
+            setDefaultValue("4019749")
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_PASSWORD
+            title = "Password"
+            summary = "Your Udvash Password"
+            setDefaultValue("zxcvbnmmnbvcxzZ,21")
+        }.also(screen::addPreference)
+    }
+
+    companion object {
+        private const val PREF_REG_NO = "registration_number"
+        private const val PREF_PASSWORD = "password"
+        private const val PREF_LAST_COURSE_URL = "last_course_url"
+    }
 }
