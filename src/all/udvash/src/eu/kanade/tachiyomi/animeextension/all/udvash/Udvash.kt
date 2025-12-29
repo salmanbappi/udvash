@@ -229,7 +229,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         try {
             val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
-            
+
             // On Dashboard, courses are in the "Course & Content" section
             doc.select("a[href*=masterCourseId=]").forEach {
                 val name = it.select("h3").text().trim()
@@ -238,7 +238,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                     list.add(Course(name, url))
                 }
             }
-            
+
             // Fallback to old path if dashboard is empty
             if (list.size == 1) {
                 val res2 = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
