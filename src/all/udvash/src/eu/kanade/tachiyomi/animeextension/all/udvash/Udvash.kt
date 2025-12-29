@@ -56,7 +56,7 @@ class Udvash : AnimeHttpSource() {
         val loginPageRequest = GET("$baseUrl/Account/Login")
         val loginPageResponse = network.client.newCall(loginPageRequest).execute()
         val loginPageDoc = Jsoup.parse(loginPageResponse.body?.string().orEmpty())
-        val token1 = loginPageDoc.select("input[name=__RequestVerificationToken]").val()
+        val token1 = loginPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
 
         // Step 2: POST to Password page
         val passwordForm = FormBody.Builder()
@@ -68,7 +68,7 @@ class Udvash : AnimeHttpSource() {
         val passwordPageRequest = POST("$baseUrl/Account/Password", headers, passwordForm)
         val passwordPageResponse = network.client.newCall(passwordPageRequest).execute()
         val passwordPageDoc = Jsoup.parse(passwordPageResponse.body?.string().orEmpty())
-        val token2 = passwordPageDoc.select("input[name=__RequestVerificationToken]").val()
+        val token2 = passwordPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
 
         // Step 3: Final Login
         val loginForm = FormBody.Builder()
