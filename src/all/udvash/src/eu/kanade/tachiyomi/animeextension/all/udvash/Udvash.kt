@@ -11,7 +11,6 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import okhttp3.FormBody
-import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -64,7 +63,7 @@ class Udvash : AnimeHttpSource() {
             .add("returnUrl", "")
             .add("__RequestVerificationToken", token1)
             .build()
-        
+
         val passwordPageRequest = POST("$baseUrl/Account/Password", headers, passwordForm)
         val passwordPageResponse = network.client.newCall(passwordPageRequest).execute()
         val passwordPageDoc = Jsoup.parse(passwordPageResponse.body?.string().orEmpty())
@@ -86,7 +85,6 @@ class Udvash : AnimeHttpSource() {
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
-        // We will show CourseTypeId=2&masterCourseId=82 as popular if id is not specified
         return GET("$baseUrl/Content/ContentSubject?CourseTypeId=2&masterCourseId=82", headers)
     }
 
@@ -111,8 +109,6 @@ class Udvash : AnimeHttpSource() {
     // =============================== Search ===============================
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        // Search is not directly supported by URL exploration here, 
-        // but we can return popular for now or implement filter based navigation.
         return popularAnimeRequest(page)
     }
 
@@ -129,39 +125,39 @@ class Udvash : AnimeHttpSource() {
     // ============================== Episodes ==============================
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        // anime.url is like /Content/ContentChapter?masterCourseId=82&subjectId=54
         val chaptersRequest = GET("$baseUrl${anime.url}", headers)
         val chaptersResponse = client.newCall(chaptersRequest).execute()
         val chaptersDoc = Jsoup.parse(chaptersResponse.body?.string().orEmpty())
-        
+
         val episodes = mutableListOf<SEpisode>()
-        
+
         chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
             val chapterName = chapter.text().trim()
             val chapterUrl = chapter.attr("href")
-            
-            // Fetch content types for this chapter
+
             val typesRequest = GET("$baseUrl$chapterUrl", headers)
             val typesResponse = client.newCall(typesRequest).execute()
             val typesDoc = Jsoup.parse(typesResponse.body?.string().orEmpty())
-            
+
             typesDoc.select("a[href*=masterContentTypeId=3]").forEach { type ->
                 val typeUrl = type.attr("href")
-                
-                // Fetch content cards (videos)
+
                 val cardsRequest = GET("$baseUrl$typeUrl", headers)
                 val cardsResponse = client.newCall(cardsRequest).execute()
                 val cardsDoc = Jsoup.parse(cardsResponse.body?.string().orEmpty())
-                
+
                 cardsDoc.select("a[href*=contentButtonType=video]").forEach { video ->
-                    episodes.add(SEpisode.create().apply {
-                        name = "$chapterName - ${video.parent()?.parent()?.select("h5")?.first()?.ownText()?.trim() ?: "Video"}"
-                        url = video.attr("href")
-                    })
+                    episodes.add(
+                        SEpisode.create().apply {
+                            val vTitle = video.parent()?.parent()?.select("h5")?.first()?.ownText()?.trim() ?: "Video"
+                            name = "$chapterName - $vTitle"
+                            url = video.attr("href")
+                        },
+                    )
                 }
             }
         }
-        
+
         return episodes.reversed()
     }
 
@@ -172,10 +168,10 @@ class Udvash : AnimeHttpSource() {
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val response = client.newCall(GET("$baseUrl${episode.url}", headers)).execute()
         val doc = Jsoup.parse(response.body?.string().orEmpty())
-        
+
         val videoSourcesAttr = doc.select("[data-all-video-source]").attr("data-all-video-source")
         if (videoSourcesAttr.isEmpty()) return emptyList()
-        
+
         return videoSourcesAttr.split(",").mapIndexed { index, url ->
             Video(url, "Source ${index + 1}", url)
         }
