@@ -44,7 +44,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
             if (response.request.url.encodedPath.contains("Account/Login") && !originalRequest.url.encodedPath.contains("Account/Login")) {
                 response.close()
-                login()
+                runCatching { login() }.onFailure { throw it }
                 chain.proceed(originalRequest)
             } else {
                 response
@@ -60,36 +60,40 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             throw Exception("Please set Registration Number and Password in extension settings.")
         }
 
-        // Step 1: Get Token from Login Page
-        val loginPageRequest = GET("$baseUrl/Account/Login")
-        val loginPageResponse = network.client.newCall(loginPageRequest).execute()
-        val loginPageDoc = Jsoup.parse(loginPageResponse.body?.string().orEmpty())
-        val token1 = loginPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
+        runCatching {
+            // Step 1: Get Token from Login Page
+            val loginUrl = baseUrl.toHttpUrl().newBuilder().addPathSegments("Account/Login").build()
+            val loginPageDoc = client.newCall(GET(loginUrl.toString())).execute().asJsoup()
+            val token1 = loginPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
 
-        // Step 2: POST to Password page
-        val passwordForm = FormBody.Builder()
-            .add("RegistrationNumber", regNo)
-            .add("returnUrl", "")
-            .add("__RequestVerificationToken", token1)
-            .build()
+            // Step 2: POST to Password page
+            val passwordForm = FormBody.Builder()
+                .add("RegistrationNumber", regNo)
+                .add("returnUrl", "")
+                .add("__RequestVerificationToken", token1)
+                .build()
 
-        val passwordPageRequest = POST("$baseUrl/Account/Password", headers, passwordForm)
-        val passwordPageResponse = network.client.newCall(passwordPageRequest).execute()
-        val passwordPageDoc = Jsoup.parse(passwordPageResponse.body?.string().orEmpty())
-        val token2 = passwordPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
+            val passwordUrl = baseUrl.toHttpUrl().newBuilder().addPathSegments("Account/Password").build()
+            val passwordPageDoc = client.newCall(POST(passwordUrl.toString(), headers, passwordForm)).execute().asJsoup()
+            val token2 = passwordPageDoc.select("input[name=__RequestVerificationToken]").attr("value")
 
-        // Step 3: Final Login
-        val loginForm = FormBody.Builder()
-            .add("RegistrationNumber", regNo)
-            .add("Password", password)
-            .add("RememberMe", "true")
-            .add("returnUrl", "")
-            .add("__RequestVerificationToken", token2)
-            .build()
+            // Step 3: Final Login
+            val loginForm = FormBody.Builder()
+                .add("RegistrationNumber", regNo)
+                .add("Password", password)
+                .add("RememberMe", "true")
+                .add("returnUrl", "")
+                .add("__RequestVerificationToken", token2)
+                .build()
 
-        val finalLoginRequest = POST("$baseUrl/Account/Login", headers, loginForm)
-        network.client.newCall(finalLoginRequest).execute().close()
+            val finalLoginUrl = baseUrl.toHttpUrl().newBuilder().addPathSegments("Account/Login").build()
+            client.newCall(POST(finalLoginUrl.toString(), headers, loginForm)).execute().close()
+        }.onFailure {
+            throw Exception("Login failed: ${it.message}")
+        }
     }
+
+    private fun Response.asJsoup() = org.jsoup.Jsoup.parse(body?.string().orEmpty())
 
     // ============================== Popular ===============================
 
@@ -107,19 +111,24 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         } else {
             courseUrl
         }
-        return GET("$baseUrl$url", headers)
+        val finalUrl = baseUrl.toHttpUrl().newBuilder().apply {
+            url.removePrefix("/").split("/").forEach { addPathSegment(it) }
+        }.build()
+        return GET(finalUrl.toString(), headers)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        val doc = Jsoup.parse(response.body?.string().orEmpty())
-        val items = doc.select("a[href*=subjectId=]").map { element ->
-            SAnime.create().apply {
-                title = element.text().trim()
-                url = element.attr("href")
-                thumbnail_url = "https://online.udvash-unmesh.com/Content/UmsTheme/assets/images/favicon.png"
+        return runCatching {
+            val doc = response.asJsoup()
+            val items = doc.select("a[href*=subjectId=]").map { element ->
+                SAnime.create().apply {
+                    title = element.text().trim()
+                    url = element.attr("href")
+                    thumbnail_url = "https://online.udvash-unmesh.com/Content/UmsTheme/assets/images/favicon.png"
+                }
             }
-        }
-        return AnimesPage(items, false)
+            AnimesPage(items, false)
+        }.getOrElse { AnimesPage(emptyList(), false) }
     }
 
     // =============================== Latest ===============================
@@ -133,11 +142,13 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     override suspend fun getSearchAnime(page: Int, query: String, filters: AnimeFilterList): AnimesPage {
         val courseFilter = filters.filterIsInstance<CourseFilter>().firstOrNull()
         if (courseFilter != null && courseFilter.state > 0) {
-            val selectedCourse = courseFilter.courses[courseFilter.state]
-            if (selectedCourse.url.isNotEmpty()) {
-                preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
-                val request = GET("$baseUrl${selectedCourse.url}", headers)
-                return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
+            runCatching {
+                val selectedCourse = courseFilter.courses[courseFilter.state]
+                if (selectedCourse.url.isNotEmpty()) {
+                    preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
+                    val request = GET(baseUrl + selectedCourse.url, headers)
+                    return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
+                }
             }
         }
         return super.getSearchAnime(page, query, filters)
@@ -159,41 +170,40 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     // ============================== Episodes ==============================
 
+    private val episodeCache = mutableMapOf<String, List<SEpisode>>()
+
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        val chaptersRequest = GET("$baseUrl${anime.url}", headers)
-        val chaptersResponse = client.newCall(chaptersRequest).execute()
-        val chaptersDoc = Jsoup.parse(chaptersResponse.body?.string().orEmpty())
+        episodeCache[anime.url]?.let { return it }
 
-        val episodes = mutableListOf<SEpisode>()
+        return runCatching {
+            val chaptersDoc = client.newCall(GET(baseUrl + anime.url, headers)).execute().asJsoup()
+            val episodes = mutableListOf<SEpisode>()
 
-        chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
-            val chapterName = chapter.text().trim()
-            val chapterUrl = chapter.attr("href")
+            chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
+                val chapterName = chapter.text().trim()
+                val chapterUrl = chapter.attr("href")
 
-            val typesRequest = GET("$baseUrl$chapterUrl", headers)
-            val typesResponse = client.newCall(typesRequest).execute()
-            val typesDoc = Jsoup.parse(typesResponse.body?.string().orEmpty())
+                val typesDoc = client.newCall(GET(baseUrl + chapterUrl, headers)).execute().asJsoup()
 
-            typesDoc.select("a[href*=masterContentTypeId=3]").forEach { type ->
-                val typeUrl = type.attr("href")
+                typesDoc.select("a[href*=masterContentTypeId=3]").forEach { type ->
+                    val typeUrl = type.attr("href")
+                    val cardsDoc = client.newCall(GET(baseUrl + typeUrl, headers)).execute().asJsoup()
 
-                val cardsRequest = GET("$baseUrl$typeUrl", headers)
-                val cardsResponse = client.newCall(cardsRequest).execute()
-                val cardsDoc = Jsoup.parse(cardsResponse.body?.string().orEmpty())
-
-                cardsDoc.select("a[href*=contentButtonType=video]").forEach { video ->
-                    episodes.add(
-                        SEpisode.create().apply {
-                            val vTitle = video.parent()?.parent()?.select("h5")?.first()?.ownText()?.trim() ?: "Video"
-                            name = "$chapterName - $vTitle"
-                            url = video.attr("href")
-                        },
-                    )
+                    cardsDoc.select("a[href*=contentButtonType=video]").forEach { video ->
+                        episodes.add(
+                            SEpisode.create().apply {
+                                val vTitle = video.parent()?.parent()?.select("h5")?.first()?.ownText()?.trim() ?: "Video"
+                                name = "$chapterName - $vTitle"
+                                url = video.attr("href")
+                            },
+                        )
+                    }
                 }
             }
-        }
-
-        return episodes.reversed()
+            episodes.reversed().also {
+                if (it.isNotEmpty()) episodeCache[anime.url] = it
+            }
+        }.getOrElse { emptyList() }
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> = throw UnsupportedOperationException()
@@ -201,15 +211,15 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     // ============================ Video Links =============================
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val response = client.newCall(GET("$baseUrl${episode.url}", headers)).execute()
-        val doc = Jsoup.parse(response.body?.string().orEmpty())
+        return runCatching {
+            val doc = client.newCall(GET(baseUrl + episode.url, headers)).execute().asJsoup()
+            val videoSourcesAttr = doc.select("[data-all-video-source]").attr("data-all-video-source")
+            if (videoSourcesAttr.isEmpty()) return emptyList()
 
-        val videoSourcesAttr = doc.select("[data-all-video-source]").attr("data-all-video-source")
-        if (videoSourcesAttr.isEmpty()) return emptyList()
-
-        return videoSourcesAttr.split(",").mapIndexed { index, url ->
-            Video(url, "Source ${index + 1}", url)
-        }
+            videoSourcesAttr.split(",").mapIndexed { index, url ->
+                Video(url, "Source ${index + 1}", url)
+            }
+        }.getOrElse { emptyList() }
     }
 
     override fun videoListParse(response: Response): List<Video> = throw UnsupportedOperationException()
@@ -226,9 +236,9 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     private fun getMyCourses(): List<Course> {
         val list = mutableListOf(Course("Select a Course", ""))
-        try {
-            val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
-            val doc = Jsoup.parse(response.body?.string().orEmpty())
+        runCatching {
+            val dashboardUrl = baseUrl.toHttpUrl().newBuilder().addPathSegment("Dashboard").build()
+            val doc = client.newCall(GET(dashboardUrl.toString(), headers)).execute().asJsoup()
 
             // On Dashboard, courses are in the "Course & Content" section
             doc.select("a[href*=masterCourseId=]").forEach {
@@ -241,14 +251,12 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
             // Fallback to old path if dashboard is empty
             if (list.size == 1) {
-                val res2 = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
-                val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
+                val fallbackUrl = baseUrl.toHttpUrl().newBuilder().addPathSegment("Content").addPathSegment("Index").addQueryParameter("id", "2").build()
+                val doc2 = client.newCall(GET(fallbackUrl.toString(), headers)).execute().asJsoup()
                 doc2.select("a[href*=masterCourseId=]").forEach {
                     list.add(Course(it.text().trim(), it.attr("href")))
                 }
             }
-        } catch (e: Exception) {
-            // Logged out
         }
         return list
     }
