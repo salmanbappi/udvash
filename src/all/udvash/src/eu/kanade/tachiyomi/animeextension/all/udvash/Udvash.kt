@@ -99,18 +99,11 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
-        val courseUrl = preferences.getString(PREF_LAST_COURSE_URL, "")
-        val url = if (courseUrl.isNullOrEmpty()) {
-            val courses = getMyCourses()
-            if (courses.isNotEmpty()) {
-                val firstCourse = courses[0]
-                preferences.edit().putString(PREF_LAST_COURSE_URL, firstCourse.url).apply()
-                firstCourse.url
-            } else {
-                "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Fallback
-            }
+        val courses = getMyCourses()
+        val url = if (courses.isNotEmpty()) {
+            courses[0].url
         } else {
-            courseUrl
+            "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Fallback
         }
         val finalUrl = baseUrl.toHttpUrl().newBuilder().apply {
             url.removePrefix("/").split("/").forEach { addPathSegment(it) }
@@ -146,7 +139,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             runCatching {
                 val selectedCourse = courseFilter.courses[courseFilter.state]
                 if (selectedCourse.url.isNotEmpty()) {
-                    preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
                     val request = GET(baseUrl + selectedCourse.url, headers)
                     return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
                 }
@@ -292,6 +284,5 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     companion object {
         private const val PREF_REG_NO = "registration_number"
         private const val PREF_PASSWORD = "password"
-        private const val PREF_LAST_COURSE_URL = "last_course_url"
     }
 }
