@@ -94,8 +94,20 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
-        val courseUrl = preferences.getString(PREF_LAST_COURSE_URL, "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82")
-        return GET("$baseUrl$courseUrl", headers)
+        val courseUrl = preferences.getString(PREF_LAST_COURSE_URL, "")
+        val url = if (courseUrl.isNullOrEmpty()) {
+            val courses = getMyCourses()
+            if (courses.size > 1) {
+                val firstCourse = courses[1]
+                preferences.edit().putString(PREF_LAST_COURSE_URL, firstCourse.url).apply()
+                firstCourse.url
+            } else {
+                "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Fallback
+            }
+        } else {
+            courseUrl
+        }
+        return GET("$baseUrl$url", headers)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
@@ -213,15 +225,30 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     }
 
     private fun getMyCourses(): List<Course> {
-        val list = mutableListOf(Course("Default", ""))
+        val list = mutableListOf(Course("Select a Course", ""))
         try {
-            val response = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
+            val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
+            
+            // On Dashboard, courses are in the "Course & Content" section
             doc.select("a[href*=masterCourseId=]").forEach {
-                list.add(Course(it.text().trim(), it.attr("href")))
+                val name = it.select("h3").text().trim()
+                val url = it.attr("href")
+                if (name.isNotEmpty() && url.isNotEmpty()) {
+                    list.add(Course(name, url))
+                }
+            }
+            
+            // Fallback to old path if dashboard is empty
+            if (list.size == 1) {
+                val res2 = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
+                val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
+                doc2.select("a[href*=masterCourseId=]").forEach {
+                    list.add(Course(it.text().trim(), it.attr("href")))
+                }
             }
         } catch (e: Exception) {
-            // Logged out or network error
+            // Logged out
         }
         return list
     }
@@ -231,7 +258,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     }
 
     private class CourseFilter(val courses: List<Course>) : AnimeFilter.Select<Course>(
-        "Select Course",
+        "My Courses",
         courses.toTypedArray(),
     )
 
