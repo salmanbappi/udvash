@@ -94,58 +94,30 @@ jobs:
           git commit -m "chore: bump version to ${{ env.NEW_VERSION }} [skip ci]" || exit 0
           git push origin master
 
-            - name: Push to Extensions Repo
-
-              if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
-
-              run: |
-
-                # This requires a secret named 'GH_PAT' with repo scope
-
-                if [ -n "${{ secrets.GH_PAT }}" ]; then
-
-                  git clone https://${{ secrets.GH_PAT }}@github.com/salmanbappi/extensions-repo.git repo_tmp
-
-                  
-
-                  PKG_NAME="eu.kanade.tachiyomi.animeextension.all.udvash"
-
-                  TARGET_NAME="$PKG_NAME-v${{ env.NEW_VERSION }}-c${{ env.NEW_CODE }}.apk"
-
-                  
-
-                  mkdir -p repo_tmp/apk
-
-                  cp ${{ env.SIGNED_APK }} repo_tmp/apk/$TARGET_NAME
-
-                  
-
-                  cd repo_tmp
-
-                  git config user.name "Gemini Automation"
-
-                  git config user.email "gemini@automation.bot"
-
-                  git add apk/$TARGET_NAME
-
-                  
-
-                  # Update index via generate script in the repo
-
-                  python generate_repo.py
-
-                  git add index.min.json repo.json
-
-                  
-
-                  git commit -m "Update Udvash to v${{ env.NEW_VERSION }}"
-
-                  git push
-
-                else
-
-                  echo "Secret 'GH_PAT' not found. Skipping extension repo update."
-
-                fi
-
-      
+      - name: Push to Extensions Repo
+        if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
+        run: |
+          # This requires a secret named 'GH_PAT' with repo scope
+          if [ -n "${{ secrets.GH_PAT }}" ]; then
+            git clone https://${{ secrets.GH_PAT }}@github.com/salmanbappi/extensions-repo.git repo_tmp
+            
+            PKG_NAME="eu.kanade.tachiyomi.animeextension.all.udvash"
+            TARGET_NAME="$PKG_NAME-v${{ env.NEW_VERSION }}-c${{ env.NEW_CODE }}.apk"
+            
+            mkdir -p repo_tmp/apk
+            cp ${{ env.SIGNED_APK }} repo_tmp/apk/$TARGET_NAME
+            
+            cd repo_tmp
+            git config user.name "Gemini Automation"
+            git config user.email "gemini@automation.bot"
+            git add apk/$TARGET_NAME
+            
+            # Update index via generate script in the repo
+            python generate_repo.py
+            git add index.min.json repo.json
+            
+            git commit -m "Update Udvash to v${{ env.NEW_VERSION }}"
+            git push
+          else
+            echo "Secret 'GH_PAT' not found. Skipping extension repo update."
+          fi
