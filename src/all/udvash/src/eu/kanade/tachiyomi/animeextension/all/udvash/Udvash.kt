@@ -254,7 +254,11 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         doc.select("a[href*=DisplayContentCard], a[href*=DisplayContentType]").forEach { element ->
             val nextUrl = element.attr("href")
             if (nextUrl.contains("contentButtonType=video") ||
-                (!nextUrl.contains("contentButtonType=note") && !nextUrl.lowercase().contains(".pdf"))) {
+                (
+                    !nextUrl.contains("contentButtonType=note") &&
+                        !nextUrl.lowercase().contains(".pdf")
+                    )
+            ) {
                 val name = element.text().trim()
                 val cleanName = if (parentName.isNotEmpty() && name.isNotEmpty()) {
                     "$parentName > $name"
