@@ -98,9 +98,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         val url = if (courseUrl.isNullOrEmpty()) {
             val courses = getMyCourses()
             if (courses.size > 1) {
-                val firstCourse = courses[1]
-                preferences.edit().putString(PREF_LAST_COURSE_URL, firstCourse.url).apply()
-                firstCourse.url
+                // courses[0] is "Select a Course", so courses[1] or last is better
+                val selectedCourse = courses.last()
+                preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
+                selectedCourse.url
             } else {
                 "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Fallback
             }
@@ -165,30 +166,56 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         val chaptersDoc = Jsoup.parse(chaptersResponse.body?.string().orEmpty())
 
         val episodes = mutableListOf<SEpisode>()
+        val visitedUrls = mutableSetOf<String>()
+        val queue = ArrayDeque<Pair<String, String>>()
 
         chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
             val chapterName = chapter.text().trim()
             val chapterUrl = chapter.attr("href")
+            queue.add(chapterUrl to chapterName)
+        }
 
-            val typesRequest = GET("$baseUrl$chapterUrl", headers)
-            val typesResponse = client.newCall(typesRequest).execute()
-            val typesDoc = Jsoup.parse(typesResponse.body?.string().orEmpty())
+        while (queue.isNotEmpty()) {
+            val (url, parentName) = queue.removeFirst()
+            val absoluteUrl = if (url.startsWith("http")) url else "$baseUrl$url"
+            if (visitedUrls.contains(absoluteUrl)) continue
+            visitedUrls.add(absoluteUrl)
 
-            typesDoc.select("a[href*=masterContentTypeId=3]").forEach { type ->
-                val typeUrl = type.attr("href")
+            val response = try {
+                client.newCall(GET(absoluteUrl, headers)).execute()
+            } catch (e: Exception) {
+                continue
+            }
+            val doc = Jsoup.parse(response.body?.string().orEmpty())
 
-                val cardsRequest = GET("$baseUrl$typeUrl", headers)
-                val cardsResponse = client.newCall(cardsRequest).execute()
-                val cardsDoc = Jsoup.parse(cardsResponse.body?.string().orEmpty())
+            // 1. Find videos on this page
+            doc.select("a[href*=contentButtonType=video]").forEach { video ->
+                val vTitle = video.parent()?.parent()?.select("h2, h5")?.first()?.text()?.trim() ?: "Video"
+                episodes.add(
+                    SEpisode.create().apply {
+                        name = "$parentName - $vTitle"
+                        this.url = video.attr("href")
+                    },
+                )
+            }
 
-                cardsDoc.select("a[href*=contentButtonType=video]").forEach { video ->
-                    episodes.add(
-                        SEpisode.create().apply {
-                            val vTitle = video.parent()?.parent()?.select("h5")?.first()?.ownText()?.trim() ?: "Video"
-                            name = "$chapterName - $vTitle"
-                            url = video.attr("href")
-                        },
-                    )
+            // 2. Find "Folders" or "Content Types" or "Content Cards" to recurse into
+            val folderSelectors = listOf(
+                "a[href*=masterContentTypeId=]",
+                "a[href*=DisplayContentCard]",
+            )
+
+            folderSelectors.forEach { selector ->
+                doc.select(selector).forEach { element ->
+                    val nextUrl = element.attr("href")
+                    val folderName = element.text().trim()
+                    if (nextUrl.isNotEmpty()) {
+                        val nextAbsUrl = if (nextUrl.startsWith("http")) nextUrl else "$baseUrl$nextUrl"
+                        if (!visitedUrls.contains(nextAbsUrl)) {
+                            val cleanFolderName = if (folderName.isNotEmpty()) folderName else parentName
+                            queue.add(nextUrl to "$parentName > $cleanFolderName")
+                        }
+                    }
                 }
             }
         }
@@ -208,7 +235,15 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         if (videoSourcesAttr.isEmpty()) return emptyList()
 
         return videoSourcesAttr.split(",").mapIndexed { index, url ->
-            Video(url, "Source ${index + 1}", url)
+            val decodedUrl = url.replace("&amp;", "&")
+            val quality = when {
+                decodedUrl.contains("1080P", true) -> "1080p"
+                decodedUrl.contains("720P", true) -> "720p"
+                decodedUrl.contains("480P", true) -> "480p"
+                decodedUrl.contains("360P", true) -> "360p"
+                else -> "Source ${index + 1}"
+            }
+            Video(decodedUrl, quality, decodedUrl)
         }
     }
 
@@ -241,10 +276,18 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
             // Fallback to old path if dashboard is empty
             if (list.size == 1) {
-                val res2 = client.newCall(GET("$baseUrl/Content/Index?id=2", headers)).execute()
-                val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
-                doc2.select("a[href*=masterCourseId=]").forEach {
-                    list.add(Course(it.text().trim(), it.attr("href")))
+                listOf("/Content/Index?id=1", "/Content/Index?id=2").forEach { path ->
+                    try {
+                        val res2 = client.newCall(GET("$baseUrl$path", headers)).execute()
+                        val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
+                        doc2.select("a[href*=masterCourseId=]").forEach {
+                            val name = it.text().trim()
+                            val url = it.attr("href")
+                            if (name.isNotEmpty() && url.isNotEmpty() && list.none { c -> c.url == url }) {
+                                list.add(Course(name, url))
+                            }
+                        }
+                    } catch (e: Exception) {}
                 }
             }
         } catch (e: Exception) {
