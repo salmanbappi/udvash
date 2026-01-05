@@ -332,10 +332,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         arrayOf("All", "Regular Live Class", "Archive Class", "Solve Class", "Marathon Live Class", "Practice Sheet"),
     ) {
         fun toId(): Int = when (state) {
-            1 -> 3  // Regular Live Class
-            2 -> 9  // Archive Class
+            1 -> 3 // Regular Live Class
+            2 -> 9 // Archive Class
             3 -> 16 // Solve Class
-            4 -> 2  // Marathon Live Class
+            4 -> 2 // Marathon Live Class
             5 -> 15 // Practice Sheet
             else -> 0
         }
