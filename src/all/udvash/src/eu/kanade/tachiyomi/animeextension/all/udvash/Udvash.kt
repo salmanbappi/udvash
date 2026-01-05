@@ -137,7 +137,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             val selectedCourse = courseFilter.courses[courseFilter.state]
             if (selectedCourse.url.isNotEmpty()) {
                 preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
-                
+
                 // If a section filter is set, we need to handle it
                 val sectionFilter = filters.filterIsInstance<ContentTypeFilter>().firstOrNull()
                 if (sectionFilter != null && sectionFilter.state > 0) {
@@ -145,7 +145,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                     val request = GET("$baseUrl${selectedCourse.url}", headers)
                     val response = client.newCall(request).awaitSuccess()
                     val doc = Jsoup.parse(response.body?.string().orEmpty())
-                    
+
                     // Find the specific section URL
                     val sectionUrl = doc.select("a[href*=masterContentTypeId=$sectionId]").attr("href")
                     if (sectionUrl.isNotEmpty()) {
@@ -153,7 +153,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                         return client.newCall(sectionRequest).awaitSuccess().use(::popularAnimeParse)
                     }
                 }
-                
+
                 val request = GET("$baseUrl${selectedCourse.url}", headers)
                 return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
             }
@@ -191,10 +191,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         if (anime.url.contains("DisplayContentCard")) {
             queue.add(anime.url to "")
         } else if (anime.url.contains("DisplayContentType")) {
-             // If we are on content type selection page, but we want all from here
-             chaptersDoc.select("a[href*=masterContentTypeId=]").forEach { element ->
-                 queue.add(element.attr("href") to element.text().trim())
-             }
+            // If we are on content type selection page, but we want all from here
+            chaptersDoc.select("a[href*=masterContentTypeId=]").forEach { element ->
+                queue.add(element.attr("href") to element.text().trim())
+            }
         } else {
             chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
                 val chapterName = chapter.text().trim()
