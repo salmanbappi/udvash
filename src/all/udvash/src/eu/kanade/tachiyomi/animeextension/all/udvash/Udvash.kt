@@ -137,6 +137,23 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             val selectedCourse = courseFilter.courses[courseFilter.state]
             if (selectedCourse.url.isNotEmpty()) {
                 preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
+                
+                // If a section filter is set, we need to handle it
+                val sectionFilter = filters.filterIsInstance<ContentTypeFilter>().firstOrNull()
+                if (sectionFilter != null && sectionFilter.state > 0) {
+                    val sectionId = sectionFilter.toId()
+                    val request = GET("$baseUrl${selectedCourse.url}", headers)
+                    val response = client.newCall(request).awaitSuccess()
+                    val doc = Jsoup.parse(response.body?.string().orEmpty())
+                    
+                    // Find the specific section URL
+                    val sectionUrl = doc.select("a[href*=masterContentTypeId=$sectionId]").attr("href")
+                    if (sectionUrl.isNotEmpty()) {
+                        val sectionRequest = GET("$baseUrl$sectionUrl", headers)
+                        return client.newCall(sectionRequest).awaitSuccess().use(::popularAnimeParse)
+                    }
+                }
+                
                 val request = GET("$baseUrl${selectedCourse.url}", headers)
                 return client.newCall(request).awaitSuccess().use(::popularAnimeParse)
             }
@@ -161,6 +178,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     // ============================== Episodes ==============================
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
+        // Now anime.url might already be a specific content type page if coming from search filter
         val chaptersRequest = GET("$baseUrl${anime.url}", headers)
         val chaptersResponse = client.newCall(chaptersRequest).execute()
         val chaptersDoc = Jsoup.parse(chaptersResponse.body?.string().orEmpty())
@@ -169,10 +187,20 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         val visitedUrls = mutableSetOf<String>()
         val queue = ArrayDeque<Pair<String, String>>()
 
-        chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
-            val chapterName = chapter.text().trim()
-            val chapterUrl = chapter.attr("href")
-            queue.add(chapterUrl to chapterName)
+        // Check if we are already on a DisplayContentCard page
+        if (anime.url.contains("DisplayContentCard")) {
+            queue.add(anime.url to "")
+        } else if (anime.url.contains("DisplayContentType")) {
+             // If we are on content type selection page, but we want all from here
+             chaptersDoc.select("a[href*=masterContentTypeId=]").forEach { element ->
+                 queue.add(element.attr("href") to element.text().trim())
+             }
+        } else {
+            chaptersDoc.select("a[href*=masterChapterId=]").forEach { chapter ->
+                val chapterName = chapter.text().trim()
+                val chapterUrl = chapter.attr("href")
+                queue.add(chapterUrl to chapterName)
+            }
         }
 
         while (queue.isNotEmpty()) {
@@ -256,6 +284,9 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         return AnimeFilterList(
             AnimeFilter.Header("Course Selection"),
             CourseFilter(courses),
+            AnimeFilter.Separator(),
+            AnimeFilter.Header("Section Filter"),
+            ContentTypeFilter(),
         )
     }
 
@@ -294,6 +325,20 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             // Logged out
         }
         return list
+    }
+
+    private class ContentTypeFilter : AnimeFilter.Select<String>(
+        "Section",
+        arrayOf("All", "Regular Live Class", "Archive Class", "Solve Class", "Marathon Live Class", "Practice Sheet"),
+    ) {
+        fun toId(): Int = when (state) {
+            1 -> 3  // Regular Live Class
+            2 -> 9  // Archive Class
+            3 -> 16 // Solve Class
+            4 -> 2  // Marathon Live Class
+            5 -> 15 // Practice Sheet
+            else -> 0
+        }
     }
 
     private data class Course(val name: String, val url: String) {
