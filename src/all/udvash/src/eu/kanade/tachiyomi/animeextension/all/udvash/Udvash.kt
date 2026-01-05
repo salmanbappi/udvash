@@ -143,8 +143,12 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             if (selectedCourse.url.isNotEmpty()) {
                 preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
 
-                val sectionFilter = filters.filterIsInstance<ContentTypeFilter>().firstOrNull()
-                val sectionId = if (sectionFilter != null && sectionFilter.state > 0) sectionFilter.toId() else null
+                val sectionFilter = filters.filterIsInstance<SectionFilter>().firstOrNull()
+                val sectionId = if (sectionFilter != null && sectionFilter.state > 0) {
+                    sectionFilter.sections[sectionFilter.state].id
+                } else {
+                    null
+                }
 
                 val request = GET("$baseUrl${selectedCourse.url}", headers)
                 val response = client.newCall(request).awaitSuccess()
@@ -187,7 +191,8 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val fixedSectionId = anime.url.substringAfter("fixedSectionId=", "").substringBefore("&").toIntOrNull()
         val visitedUrls = Collections.synchronizedSet(mutableSetOf<String>())
-        return recursiveEpisodeFetch(anime.url, "", fixedSectionId, visitedUrls).reversed()
+        // Start recursion with depth 0, max depth 3
+        return recursiveEpisodeFetch(anime.url, "", fixedSectionId, visitedUrls, 0).reversed()
     }
 
     private suspend fun recursiveEpisodeFetch(
@@ -195,7 +200,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         parentName: String,
         fixedSectionId: Int?,
         visited: MutableSet<String>,
+        depth: Int,
     ): List<SEpisode> = coroutineScope {
+        if (depth > 3) return@coroutineScope emptyList()
+
         val absoluteUrl = if (url.startsWith("http")) url else "$baseUrl$url"
         if (!visited.add(absoluteUrl)) return@coroutineScope emptyList()
 
@@ -208,7 +216,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
         val episodes = mutableListOf<SEpisode>()
 
-        // 1. Extract Videos
+        // 1. Extract Videos ONLY (Strict check for contentButtonType=video)
         doc.select("a[href*=contentButtonType=video]").forEach { video ->
             val vTitle = video.parent()?.parent()?.select("h2, h5, h3, .card-body h3")?.firstOrNull()?.text()?.trim() ?: "Video"
             episodes.add(
@@ -226,7 +234,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         doc.select("a[href*=masterChapterId=]").forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
-            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, name, fixedSectionId, visited) })
+            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, name, fixedSectionId, visited, depth + 1) })
         }
 
         // Content Types (Sections)
@@ -237,16 +245,19 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
             if (fixedSectionId == null || fixedSectionId == sectionId) {
                 val cleanName = if (parentName.isNotEmpty()) "$parentName > $name" else name
-                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited) })
+                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1) })
             }
         }
 
-        // Folders/Cards
+        // Folders/Cards (Recurse deeper)
         doc.select("a[href*=DisplayContentCard], a[href*=DisplayContentType]").forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
-            val cleanName = if (parentName.isNotEmpty()) "$parentName > $name" else name
-            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited) })
+            // Ignore links that are explicitly notes/pdfs to save requests
+            if (!nextUrl.contains("contentButtonType=note") && !nextUrl.lowercase().endsWith(".pdf")) {
+                val cleanName = if (parentName.isNotEmpty()) "$parentName > $name" else name
+                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1) })
+            }
         }
 
         episodes + nextTasks.awaitAll().flatten()
@@ -282,12 +293,15 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     override fun getFilterList(): AnimeFilterList {
         val courses = getMyCourses()
+        val lastCourseUrl = preferences.getString(PREF_LAST_COURSE_URL, "") ?: ""
+        val sections = getSections(lastCourseUrl)
+
         return AnimeFilterList(
             AnimeFilter.Header("Course Selection"),
             CourseFilter(courses),
             AnimeFilter.Separator(),
             AnimeFilter.Header("Section Filter"),
-            ContentTypeFilter(),
+            SectionFilter(sections),
         )
     }
 
@@ -301,7 +315,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
 
-            // On Dashboard, courses are in the "Course & Content" section
             doc.select("a[href*=masterCourseId=]").forEach {
                 val name = it.select("h3").text().trim()
                 val url = it.attr("href")
@@ -310,7 +323,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                 }
             }
 
-            // Fallback to old path if dashboard is empty
             if (list.size == 1) {
                 listOf("/Content/Index?id=1", "/Content/Index?id=2").forEach { path ->
                     try {
@@ -326,26 +338,49 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                     } catch (e: Exception) {}
                 }
             }
-        } catch (e: Exception) {
-            // Logged out
-        }
+        } catch (e: Exception) {}
         coursesCache = list
         return list
     }
 
-    private class ContentTypeFilter : AnimeFilter.Select<String>(
-        "Section",
-        arrayOf("All", "Regular Live Class", "Archive Class", "Solve Class", "Marathon Live Class", "Practice Sheet"),
-    ) {
-        fun toId(): Int = when (state) {
-            1 -> 3 // Regular Live Class
-            2 -> 9 // Archive Class
-            3 -> 16 // Solve Class
-            4 -> 2 // Marathon Live Class
-            5 -> 15 // Practice Sheet
-            else -> 0
-        }
+    private fun getSections(courseUrl: String): List<Section> {
+        val list = mutableListOf(Section("All Sections", 0))
+        if (courseUrl.isEmpty()) return list
+
+        try {
+            // First, we need to go to a subject page to see the content types (sections)
+            // or sometimes they are visible on the course page if it's a direct DisplayContentType link
+            val response = client.newCall(GET("$baseUrl$courseUrl", headers)).execute()
+            val doc = Jsoup.parse(response.body?.string().orEmpty())
+
+            // Try to find a subject to peek into for sections
+            val subjectUrl = doc.select("a[href*=subjectId=]").firstOrNull()?.attr("href")
+            val targetDoc = if (subjectUrl != null) {
+                val res2 = client.newCall(GET("$baseUrl$subjectUrl", headers)).execute()
+                Jsoup.parse(res2.body?.string().orEmpty())
+            } else {
+                doc
+            }
+
+            targetDoc.select("a[href*=masterContentTypeId=]").forEach {
+                val name = it.text().trim()
+                val id = it.attr("href").substringAfter("masterContentTypeId=").substringBefore("&").toIntOrNull()
+                if (name.isNotEmpty() && id != null && list.none { s -> s.id == id }) {
+                    list.add(Section(name, id))
+                }
+            }
+        } catch (e: Exception) {}
+        return list
     }
+
+    private data class Section(val name: String, val id: Int) {
+        override fun toString(): String = name
+    }
+
+    private class SectionFilter(val sections: List<Section>) : AnimeFilter.Select<Section>(
+        "Section",
+        sections.toTypedArray(),
+    )
 
     private data class Course(val name: String, val url: String) {
         override fun toString(): String = name
