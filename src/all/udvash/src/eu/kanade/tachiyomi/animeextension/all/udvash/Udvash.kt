@@ -150,6 +150,11 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                     null
                 }
 
+                // If filter is applied, save it
+                if (sectionId != null) {
+                    preferences.edit().putInt(PREF_LAST_SECTION_ID, sectionId).apply()
+                }
+
                 val request = GET("$baseUrl${selectedCourse.url}", headers)
                 val response = client.newCall(request).awaitSuccess()
                 val doc = Jsoup.parse(response.body?.string().orEmpty())
@@ -189,9 +194,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     // ============================== Episodes ==============================
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        val fixedSectionId = anime.url.substringAfter("fixedSectionId=", "").substringBefore("&").toIntOrNull()
+        val fixedSectionId = anime.url.substringAfter("fixedSectionId=", "")
+            .substringBefore("&").toIntOrNull() ?: preferences.getInt(PREF_LAST_SECTION_ID, 0).takeIf { it > 0 }
+            
         val visitedUrls = Collections.synchronizedSet(mutableSetOf<String>())
-        // Reset depth for each anime to allow full parsing up to 15 levels (Deep Search)
         return recursiveEpisodeFetch(anime.url, "", fixedSectionId, visitedUrls, 0, false).reversed()
     }
 
@@ -203,7 +209,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         depth: Int,
         isInsideTargetSection: Boolean,
     ): List<SEpisode> = coroutineScope {
-        if (depth > 15) return@coroutineScope emptyList() // Very deep search
+        if (depth > 15) return@coroutineScope emptyList()
 
         val absoluteUrl = if (url.startsWith("http")) url else "$baseUrl$url"
 
@@ -212,14 +218,15 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                 absoluteUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
             }.toIntOrNull()
 
-        // If a filter is active and we hit a section landing page that DOES NOT match our target, skip it.
+        // If a filter is active and we hit a section page that DOES NOT match our target, skip it.
         if (fixedSectionId != null && currentUrlSectionId != null && currentUrlSectionId != fixedSectionId) {
-            return@coroutineScope emptyList()
+            if (absoluteUrl.contains("DisplayContentType") || absoluteUrl.contains("DisplayContentCard")) {
+                return@coroutineScope emptyList()
+            }
         }
 
         if (!visited.add(absoluteUrl)) return@coroutineScope emptyList()
 
-        // We are "inside" the target section if we have no filter, or if we just entered the matching section folder.
         val currentlyInside = isInsideTargetSection || (fixedSectionId != null && currentUrlSectionId == fixedSectionId)
 
         val doc = try {
@@ -231,7 +238,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
         val episodes = mutableListOf<SEpisode>()
 
-        // 1. Extract Videos (Only if we are inside the target section or no filter is active)
+        // 1. Extract Videos
         if (fixedSectionId == null || currentlyInside) {
             doc.select("a[href*=contentButtonType=video]").forEach { video ->
                 val vTitle = video.parent()?.parent()?.select("h2, h5, h3, .card-body h3, .card-title")
@@ -248,13 +255,11 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         // 2. Recurse in Parallel
         val nextTasks = mutableListOf<Deferred<List<SEpisode>>>()
 
-        // Subjects / Chapters / Sections / Folders
         val selectors = "a[href*=masterChapterId=], a[href*=subjectId=], a[href*=ContentChapter], a[href*=DisplayContentType], a[href*=DisplayContentCard], a[href*=masterContentTypeId=], a[href*=ContentTypeId=]"
         doc.select(selectors).forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
 
-            // Strict exclusion of PDF/Notes and Practice Sheets (ID 15)
             val ln = nextUrl.lowercase()
             val nextUrlSectionId = nextUrl.substringAfter("masterContentTypeId=", "")
                 .substringBefore("&").ifEmpty {
@@ -364,8 +369,9 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             Section("All Sections", 0),
             Section("Regular Live Class", 3),
             Section("Archive Class", 9),
-            Section("Solve Class", 16),
+            Section("Master Class", 1),
             Section("Marathon Live Class", 2),
+            Section("Solve Class", 16),
         )
     }
 
@@ -409,5 +415,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         private const val PREF_REG_NO = "registration_number"
         private const val PREF_PASSWORD = "password"
         private const val PREF_LAST_COURSE_URL = "last_course_url"
+        private const val PREF_LAST_SECTION_ID = "last_section_id"
     }
 }
