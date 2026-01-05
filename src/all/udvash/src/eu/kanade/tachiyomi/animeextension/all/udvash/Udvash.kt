@@ -256,7 +256,13 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             if (nextUrl.contains("contentButtonType=video") ||
                 (!nextUrl.contains("contentButtonType=note") && !nextUrl.lowercase().contains(".pdf"))) {
                 val name = element.text().trim()
-                val cleanName = if (parentName.isNotEmpty() && name.isNotEmpty()) "$parentName > $name" else if (name.isNotEmpty()) name else parentName
+                val cleanName = if (parentName.isNotEmpty() && name.isNotEmpty()) {
+                    "$parentName > $name"
+                } else if (name.isNotEmpty()) {
+                    name
+                } else {
+                    parentName
+                }
                 nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1) })
             }
         }
