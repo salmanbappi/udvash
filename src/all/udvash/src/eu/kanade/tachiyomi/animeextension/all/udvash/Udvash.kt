@@ -15,7 +15,6 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
-import eu.kanade.tachiyomi.network.awaitSuccess
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -333,54 +332,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         coursesCache = list
         return list
     }
-
-    private class ContentTypeFilter : AnimeFilter.Select<String>(
-        "Section",
-        arrayOf("All", "Regular Live Class", "Archive Class", "Solve Class", "Marathon Live Class", "Practice Sheet"),
-    ) {
-        fun toId(): Int = when (state) {
-            1 -> 3 // Regular Live Class
-            2 -> 9 // Archive Class
-            3 -> 16 // Solve Class
-            4 -> 2 // Marathon Live Class
-            5 -> 15 // Practice Sheet
-            else -> 0
-        }
-    }
-
-    private data class Course(val name: String, val url: String) {
-        override fun toString(): String = name
-    }
-
-    private class CourseFilter(val courses: List<Course>) : AnimeFilter.Select<Course>(
-        "My Courses",
-        courses.toTypedArray(),
-    )
-
-    // ============================== Settings ==============================
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = PREF_REG_NO
-            title = "Registration Number"
-            summary = "Your Udvash Registration Number"
-            setDefaultValue("")
-        }.also(screen::addPreference)
-
-        EditTextPreference(screen.context).apply {
-            key = PREF_PASSWORD
-            title = "Password"
-            summary = "Your Udvash Password"
-            setDefaultValue("")
-        }.also(screen::addPreference)
-    }
-
-    companion object {
-        private const val PREF_REG_NO = "registration_number"
-        private const val PREF_PASSWORD = "password"
-        private const val PREF_LAST_COURSE_URL = "last_course_url"
-    }
-}
 
     private class ContentTypeFilter : AnimeFilter.Select<String>(
         "Section",
