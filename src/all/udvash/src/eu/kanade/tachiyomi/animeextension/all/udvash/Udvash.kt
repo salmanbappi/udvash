@@ -202,23 +202,24 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         depth: Int,
         isInsideSection: Boolean = false,
     ): List<SEpisode> = coroutineScope {
-        if (depth > 3) return@coroutineScope emptyList()
+        if (depth > 10) return@coroutineScope emptyList() // Deep search
 
         val absoluteUrl = if (url.startsWith("http")) url else "$baseUrl$url"
 
-        // 1. Global Filter Check: Skip if current URL belongs to a different section
         val sectionIdInUrl = absoluteUrl.substringAfter("masterContentTypeId=", "")
             .substringBefore("&").ifEmpty {
                 absoluteUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
             }.toIntOrNull()
 
         if (fixedSectionId != null && sectionIdInUrl != null && sectionIdInUrl != fixedSectionId) {
-            return@coroutineScope emptyList()
+            // Only skip if it's explicitly a section landing page
+            if (absoluteUrl.contains("ContentType")) {
+                return@coroutineScope emptyList()
+            }
         }
 
         if (!visited.add(absoluteUrl)) return@coroutineScope emptyList()
 
-        // Determine if we are now inside the target section
         val currentlyInside = isInsideSection || (fixedSectionId != null && sectionIdInUrl == fixedSectionId)
 
         val doc = try {
@@ -230,7 +231,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
         val episodes = mutableListOf<SEpisode>()
 
-        // 2. Extract Videos ONLY if we are inside the target section (or if no filter is active)
+        // 1. Extract Videos (Strictly ONLY contentButtonType=video)
         if (fixedSectionId == null || currentlyInside) {
             doc.select("a[href*=contentButtonType=video]").forEach { video ->
                 val vTitle = video.parent()?.parent()?.select("h2, h5, h3, .card-body h3, .card-title")
@@ -244,49 +245,33 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             }
         }
 
-        // 3. Recurse in Parallel
+        // 2. Recurse in Parallel
         val nextTasks = mutableListOf<Deferred<List<SEpisode>>>()
 
-        // Chapters
-        doc.select("a[href*=masterChapterId=]").forEach { element ->
+        // Subjects / Chapters / Subjects-in-course
+        val folderSelectors = "a[href*=masterChapterId=], a[href*=subjectId=], a[href*=ContentChapter], a[href*=DisplayContentType], a[href*=DisplayContentCard]"
+        doc.select(folderSelectors).forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
-            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, name, fixedSectionId, visited, depth + 1, currentlyInside) })
-        }
 
-        // Sections
-        doc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=]").forEach { element ->
-            val nextUrl = element.attr("href")
-            val name = element.text().trim()
-            val sectionId = nextUrl.substringAfter("masterContentTypeId=", "")
-                .substringBefore("&").ifEmpty {
-                    nextUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
-                }.toIntOrNull()
+            // Skip notes/PDFs and other sections if filter is active
+            val ln = nextUrl.lowercase()
+            if (!ln.contains("contentbuttontype=note") && !ln.contains(".pdf")) {
+                val nextSectionId = nextUrl.substringAfter("masterContentTypeId=", "")
+                    .substringBefore("&").ifEmpty {
+                        nextUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
+                    }.toIntOrNull()
 
-            if (fixedSectionId == null || fixedSectionId == sectionId) {
-                val cleanName = if (parentName.isNotEmpty()) "$parentName > $name" else name
-                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1, currentlyInside) })
-            }
-        }
-
-        // Folders/Cards (Only recurse if NOT a note/pdf)
-        doc.select("a[href*=DisplayContentCard], a[href*=DisplayContentType]").forEach { element ->
-            val nextUrl = element.attr("href")
-            if (nextUrl.contains("contentButtonType=video") ||
-                (
-                    !nextUrl.contains("contentButtonType=note") &&
-                        !nextUrl.lowercase().contains(".pdf")
-                    )
-            ) {
-                val name = element.text().trim()
-                val cleanName = if (parentName.isNotEmpty() && name.isNotEmpty()) {
-                    "$parentName > $name"
-                } else if (name.isNotEmpty()) {
-                    name
-                } else {
-                    parentName
+                if (fixedSectionId == null || nextSectionId == null || nextSectionId == fixedSectionId) {
+                    val cleanName = if (parentName.isNotEmpty() && name.isNotEmpty()) {
+                        "$parentName > $name"
+                    } else if (name.isNotEmpty()) {
+                        name
+                    } else {
+                        parentName
+                    }
+                    nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1, currentlyInside) })
                 }
-                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1, currentlyInside) })
             }
         }
 
@@ -383,49 +368,33 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             val response = client.newCall(GET("$baseUrl$courseUrl", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
 
-            // Sections can be directly on course page OR inside subjects OR inside DisplayContentType
-            val possibleLinks = doc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=], a[href*=DisplayContentType]")
+            val urlsToPeek = mutableSetOf<String>()
+            doc.select("a[href*=subjectId=], a[href*=masterChapterId=]").take(3).forEach {
+                urlsToPeek.add(it.attr("href"))
+            }
+            urlsToPeek.add(courseUrl)
 
-            if (possibleLinks.isEmpty()) {
-                // Peek into the first subject if nothing found
-                val subjectUrl = doc.select("a[href*=subjectId=]").firstOrNull()?.attr("href")
-                if (subjectUrl != null) {
-                    val res2 = client.newCall(GET("$baseUrl$subjectUrl", headers)).execute()
-                    val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
+            urlsToPeek.forEach { u ->
+                try {
+                    val absUrl = if (u.startsWith("http")) u else "$baseUrl$u"
+                    val res = client.newCall(GET(absUrl, headers)).execute()
+                    val d = Jsoup.parse(res.body?.string().orEmpty())
 
-                    // Check if there is a "Section Selection" page
-                    val contentTypePageUrl = doc2.select("a[href*=DisplayContentType]").firstOrNull()?.attr("href")
-                    val finalDoc = if (contentTypePageUrl != null) {
-                        val res3 = client.newCall(GET("$baseUrl$contentTypePageUrl", headers)).execute()
-                        Jsoup.parse(res3.body?.string().orEmpty())
-                    } else {
-                        doc2
-                    }
-
-                    finalDoc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=]").forEach {
+                    d.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=]").forEach {
                         val name = it.text().trim()
                         val id = it.attr("href").substringAfter("masterContentTypeId=", "")
                             .substringBefore("&").ifEmpty {
                                 it.attr("href").substringAfter("ContentTypeId=", "").substringBefore("&")
                             }.toIntOrNull()
                         if (name.isNotEmpty() && id != null && list.none { s -> s.id == id }) {
-                            list.add(Section(name, id))
+                            val ln = name.lowercase()
+                            // Skip Practice Sheet and Note from filter list as requested
+                            if (!ln.contains("practice sheet") && !ln.contains("note")) {
+                                list.add(Section(name, id))
+                            }
                         }
                     }
-                }
-            } else {
-                possibleLinks.forEach {
-                    if (it.attr("href").contains("masterContentTypeId=") || it.attr("href").contains("ContentTypeId=")) {
-                        val name = it.text().trim()
-                        val id = it.attr("href").substringAfter("masterContentTypeId=", "")
-                            .substringBefore("&").ifEmpty {
-                                it.attr("href").substringAfter("ContentTypeId=", "").substringBefore("&")
-                            }.toIntOrNull()
-                        if (name.isNotEmpty() && id != null && list.none { s -> s.id == id }) {
-                            list.add(Section(name, id))
-                        }
-                    }
-                }
+                } catch (e: Exception) {}
             }
         } catch (e: Exception) {}
 
