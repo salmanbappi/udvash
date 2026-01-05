@@ -191,7 +191,6 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val fixedSectionId = anime.url.substringAfter("fixedSectionId=", "").substringBefore("&").toIntOrNull()
         val visitedUrls = Collections.synchronizedSet(mutableSetOf<String>())
-        // Start recursion with depth 0, max depth 3
         return recursiveEpisodeFetch(anime.url, "", fixedSectionId, visitedUrls, 0).reversed()
     }
 
@@ -201,11 +200,26 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         fixedSectionId: Int?,
         visited: MutableSet<String>,
         depth: Int,
+        isInsideSection: Boolean = false,
     ): List<SEpisode> = coroutineScope {
         if (depth > 3) return@coroutineScope emptyList()
 
         val absoluteUrl = if (url.startsWith("http")) url else "$baseUrl$url"
+
+        // 1. Global Filter Check: Skip if current URL belongs to a different section
+        val sectionIdInUrl = absoluteUrl.substringAfter("masterContentTypeId=", "")
+            .substringBefore("&").ifEmpty {
+                absoluteUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
+            }.toIntOrNull()
+
+        if (fixedSectionId != null && sectionIdInUrl != null && sectionIdInUrl != fixedSectionId) {
+            return@coroutineScope emptyList()
+        }
+
         if (!visited.add(absoluteUrl)) return@coroutineScope emptyList()
+
+        // Determine if we are now inside the target section
+        val currentlyInside = isInsideSection || (fixedSectionId != null && sectionIdInUrl == fixedSectionId)
 
         val doc = try {
             val response = client.newCall(GET(absoluteUrl, headers)).awaitSuccess()
@@ -216,37 +230,42 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
         val episodes = mutableListOf<SEpisode>()
 
-        // 1. Extract Videos (Strict exclusion of notes/PDFs)
-        doc.select("a[href*=contentButtonType=video]").forEach { video ->
-            val vTitle = video.parent()?.parent()?.select("h2, h5, h3, .card-body h3, .card-title")?.firstOrNull()?.text()?.trim() ?: "Video"
-            episodes.add(
-                SEpisode.create().apply {
-                    name = if (parentName.isNotEmpty()) "$parentName - $vTitle" else vTitle
-                    this.url = video.attr("href")
-                },
-            )
+        // 2. Extract Videos ONLY if we are inside the target section (or if no filter is active)
+        if (fixedSectionId == null || currentlyInside) {
+            doc.select("a[href*=contentButtonType=video]").forEach { video ->
+                val vTitle = video.parent()?.parent()?.select("h2, h5, h3, .card-body h3, .card-title")
+                    ?.firstOrNull()?.text()?.trim() ?: "Video"
+                episodes.add(
+                    SEpisode.create().apply {
+                        name = if (parentName.isNotEmpty()) "$parentName - $vTitle" else vTitle
+                        this.url = video.attr("href")
+                    },
+                )
+            }
         }
 
-        // 2. Recurse in Parallel
+        // 3. Recurse in Parallel
         val nextTasks = mutableListOf<Deferred<List<SEpisode>>>()
 
         // Chapters
         doc.select("a[href*=masterChapterId=]").forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
-            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, name, fixedSectionId, visited, depth + 1) })
+            nextTasks.add(async { recursiveEpisodeFetch(nextUrl, name, fixedSectionId, visited, depth + 1, currentlyInside) })
         }
 
-        // Content Types (Sections)
-        doc.select("a[href*=masterContentTypeId=]").forEach { element ->
+        // Sections
+        doc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=]").forEach { element ->
             val nextUrl = element.attr("href")
             val name = element.text().trim()
-            val sectionId = nextUrl.substringAfter("masterContentTypeId=").substringBefore("&").toIntOrNull()
+            val sectionId = nextUrl.substringAfter("masterContentTypeId=", "")
+                .substringBefore("&").ifEmpty {
+                    nextUrl.substringAfter("ContentTypeId=", "").substringBefore("&")
+                }.toIntOrNull()
 
-            // If we have a filter, only enter matching section
             if (fixedSectionId == null || fixedSectionId == sectionId) {
                 val cleanName = if (parentName.isNotEmpty()) "$parentName > $name" else name
-                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1) })
+                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1, currentlyInside) })
             }
         }
 
@@ -267,7 +286,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                 } else {
                     parentName
                 }
-                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1) })
+                nextTasks.add(async { recursiveEpisodeFetch(nextUrl, cleanName, fixedSectionId, visited, depth + 1, currentlyInside) })
             }
         }
 
@@ -365,7 +384,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             val doc = Jsoup.parse(response.body?.string().orEmpty())
 
             // Sections can be directly on course page OR inside subjects OR inside DisplayContentType
-            val possibleLinks = doc.select("a[href*=masterContentTypeId=], a[href*=DisplayContentType]")
+            val possibleLinks = doc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=], a[href*=DisplayContentType]")
 
             if (possibleLinks.isEmpty()) {
                 // Peek into the first subject if nothing found
@@ -383,9 +402,12 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                         doc2
                     }
 
-                    finalDoc.select("a[href*=masterContentTypeId=]").forEach {
+                    finalDoc.select("a[href*=masterContentTypeId=], a[href*=ContentTypeId=]").forEach {
                         val name = it.text().trim()
-                        val id = it.attr("href").substringAfter("masterContentTypeId=").substringBefore("&").toIntOrNull()
+                        val id = it.attr("href").substringAfter("masterContentTypeId=", "")
+                            .substringBefore("&").ifEmpty {
+                                it.attr("href").substringAfter("ContentTypeId=", "").substringBefore("&")
+                            }.toIntOrNull()
                         if (name.isNotEmpty() && id != null && list.none { s -> s.id == id }) {
                             list.add(Section(name, id))
                         }
@@ -393,9 +415,12 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
                 }
             } else {
                 possibleLinks.forEach {
-                    if (it.attr("href").contains("masterContentTypeId=")) {
+                    if (it.attr("href").contains("masterContentTypeId=") || it.attr("href").contains("ContentTypeId=")) {
                         val name = it.text().trim()
-                        val id = it.attr("href").substringAfter("masterContentTypeId=").substringBefore("&").toIntOrNull()
+                        val id = it.attr("href").substringAfter("masterContentTypeId=", "")
+                            .substringBefore("&").ifEmpty {
+                                it.attr("href").substringAfter("ContentTypeId=", "").substringBefore("&")
+                            }.toIntOrNull()
                         if (name.isNotEmpty() && id != null && list.none { s -> s.id == id }) {
                             list.add(Section(name, id))
                         }
