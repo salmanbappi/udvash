@@ -196,7 +196,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
         val fixedSectionId = anime.url.substringAfter("fixedSectionId=", "")
             .substringBefore("&").toIntOrNull() ?: preferences.getInt(PREF_LAST_SECTION_ID, 0).takeIf { it > 0 }
-            
+
         val visitedUrls = Collections.synchronizedSet(mutableSetOf<String>())
         return recursiveEpisodeFetch(anime.url, "", fixedSectionId, visitedUrls, 0, false).reversed()
     }
