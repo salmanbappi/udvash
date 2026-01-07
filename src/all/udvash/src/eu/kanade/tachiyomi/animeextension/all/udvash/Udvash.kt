@@ -38,6 +38,8 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
 
     override val supportsLatest = false
 
+    override val id: Long = 5181466391484419846L
+
     private val preferences: SharedPreferences by lazy {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0)
     }
