@@ -44,6 +44,11 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0)
     }
 
+    override fun headersBuilder(): okhttp3.Headers.Builder {
+        return super.headersBuilder()
+            .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    }
+
     override val client: OkHttpClient = network.client.newBuilder()
         .addInterceptor { chain ->
             val originalRequest = chain.request()
@@ -108,12 +113,12 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
         val url = if (courseUrl.isNullOrEmpty()) {
             val courses = getMyCourses()
             if (courses.size > 1) {
-                // courses[0] is "Select a Course", so courses[1] or last is better
-                val selectedCourse = courses.last()
+                // index 0 is "Select a Course", 1 & 2 are defaults, so use last found or first default
+                val selectedCourse = courses.firstOrNull { it.url.isNotEmpty() } ?: courses.last()
                 preferences.edit().putString(PREF_LAST_COURSE_URL, selectedCourse.url).apply()
                 selectedCourse.url
             } else {
-                "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Fallback
+                "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82" // Absolute Fallback
             }
         } else {
             courseUrl
@@ -334,9 +339,13 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     private var coursesCache: List<Course>? = null
 
     private fun getMyCourses(): List<Course> {
-        coursesCache?.let { if (it.size > 1) return it }
+        coursesCache?.let { if (it.size > 3) return it }
 
-        val list = mutableListOf(Course("Select a Course", ""))
+        val list = mutableListOf(
+            Course("Select a Course", ""),
+            Course("Varsity KA Master Class", "/Content/ContentSubject?CourseTypeId=1&masterCourseId=3"),
+            Course("Course & Content", "/Content/ContentSubject?CourseTypeId=2&masterCourseId=82"),
+        )
         try {
             val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
@@ -346,6 +355,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             if (indexLinks.isEmpty()) {
                 indexLinks.add("/Content/Index?id=1")
                 indexLinks.add("/Content/Index?id=2")
+                indexLinks.add("/Content/Index?id=3")
             }
 
             indexLinks.forEach { path ->
@@ -373,7 +383,7 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             }
         } catch (e: Exception) {}
 
-        if (list.size > 1) {
+        if (list.size > 3) {
             coursesCache = list
         }
         return list
