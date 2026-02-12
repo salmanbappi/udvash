@@ -52,7 +52,10 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
             if (response.request.url.encodedPath.contains("Account/Login") && !originalRequest.url.encodedPath.contains("Account/Login")) {
                 response.close()
                 login()
-                chain.proceed(originalRequest)
+                val newRequest = originalRequest.newBuilder()
+                    .header("Referer", "$baseUrl/Account/Login")
+                    .build()
+                chain.proceed(newRequest)
             } else {
                 response
             }
@@ -331,38 +334,48 @@ class Udvash : AnimeHttpSource(), ConfigurableAnimeSource {
     private var coursesCache: List<Course>? = null
 
     private fun getMyCourses(): List<Course> {
-        coursesCache?.let { return it }
+        coursesCache?.let { if (it.size > 1) return it }
 
         val list = mutableListOf(Course("Select a Course", ""))
         try {
             val response = client.newCall(GET("$baseUrl/Dashboard", headers)).execute()
             val doc = Jsoup.parse(response.body?.string().orEmpty())
 
-            doc.select("a[href*=masterCourseId=]").forEach {
-                val name = it.select("h3").text().trim()
-                val url = it.attr("href")
-                if (name.isNotEmpty() && url.isNotEmpty() && list.none { c -> c.url == url }) {
-                    list.add(Course(name, url))
-                }
+            // Find all unique Content/Index links from the dashboard
+            val indexLinks = doc.select("a[href*=/Content/Index?id=]").map { it.attr("href") }.toMutableSet()
+            if (indexLinks.isEmpty()) {
+                indexLinks.add("/Content/Index?id=1")
+                indexLinks.add("/Content/Index?id=2")
             }
 
-            if (list.size == 1) {
-                listOf("/Content/Index?id=1", "/Content/Index?id=2").forEach { path ->
-                    try {
-                        val res2 = client.newCall(GET("$baseUrl$path", headers)).execute()
-                        val doc2 = Jsoup.parse(res2.body?.string().orEmpty())
-                        doc2.select("a[href*=masterCourseId=]").forEach {
-                            val name = it.text().trim()
-                            val url = it.attr("href")
-                            if (name.isNotEmpty() && url.isNotEmpty() && list.none { c -> c.url == url }) {
-                                list.add(Course(name, url))
-                            }
+            indexLinks.forEach { path ->
+                try {
+                    val url = if (path.startsWith("http")) path else "$baseUrl$path"
+                    val res = client.newCall(GET(url, headers)).execute()
+                    val d = Jsoup.parse(res.body?.string().orEmpty())
+                    d.select("a[href*=masterCourseId=]").forEach {
+                        val name = it.select("h3, .action-title").text().trim().ifEmpty { it.text().trim() }
+                        val courseUrl = it.attr("href")
+                        if (name.isNotEmpty() && courseUrl.isNotEmpty() && list.none { c -> c.url == courseUrl }) {
+                            list.add(Course(name, courseUrl))
                         }
-                    } catch (e: Exception) {}
+                    }
+                } catch (e: Exception) {}
+            }
+
+            // Also check Dashboard directly just in case
+            doc.select("a[href*=masterCourseId=]").forEach {
+                val name = it.select("h3, .action-title").text().trim().ifEmpty { it.text().trim() }
+                val courseUrl = it.attr("href")
+                if (name.isNotEmpty() && courseUrl.isNotEmpty() && list.none { c -> c.url == courseUrl }) {
+                    list.add(Course(name, courseUrl))
                 }
             }
         } catch (e: Exception) {}
-        coursesCache = list
+
+        if (list.size > 1) {
+            coursesCache = list
+        }
         return list
     }
 
